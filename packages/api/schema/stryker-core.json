@@ -414,6 +414,16 @@
         }
       ],
       "description": "Enable or disable certain warnings"
+    },
+    "sampling": {
+      "description": "Choose whether to apply mutant sampling or not.",
+      "type": "boolean",
+      "default": false
+    },
+    "samplingRate": {
+      "description": "The applied sampling rate when sampling is turned on.",
+      "$ref": "#/definitions/percentage",
+      "default": 5
     }
   }
 }

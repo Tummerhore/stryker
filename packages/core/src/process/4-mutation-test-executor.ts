@@ -1,9 +1,10 @@
 import { from, zip, partition, merge, Observable } from 'rxjs';
 import { flatMap, toArray, map, tap, shareReplay } from 'rxjs/operators';
+import * as shuffle from 'shuffle-array';
 import { tokens, commonTokens } from '@stryker-mutator/api/plugin';
 import { StrykerOptions } from '@stryker-mutator/api/core';
 import { MutantResult } from '@stryker-mutator/api/report';
-import { MutantRunOptions, TestRunner } from '@stryker-mutator/api/test-runner';
+import { MutantRunOptions, MutantRunStatus, TestRunner } from '@stryker-mutator/api/test-runner';
 import { Logger } from '@stryker-mutator/api/logging';
 import { I } from '@stryker-mutator/util';
 import { CheckStatus, Checker, CheckResult, PassedCheckResult } from '@stryker-mutator/api/check';
@@ -51,13 +52,15 @@ export class MutationTestExecutor {
     private readonly sandbox: I<Sandbox>,
     private readonly log: Logger,
     private readonly timer: I<Timer>,
-    private readonly concurrencyTokenProvider: I<ConcurrencyTokenProvider>
+    private readonly concurrencyTokenProvider: I<ConcurrencyTokenProvider>,
+    private remainingSamples: number = 0,
   ) {}
 
   public async execute(): Promise<MutantResult[]> {
     const { ignoredResult$, notIgnoredMutant$ } = this.executeIgnore(from(this.matchedMutants));
     const { passedMutant$, checkResult$ } = this.executeCheck(from(notIgnoredMutant$));
-    const { coveredMutant$, noCoverageResult$ } = this.executeNoCoverage(passedMutant$);
+    const shuffledMutant$ = this.executeShuffle(from(passedMutant$));
+    const { coveredMutant$, noCoverageResult$ } = this.executeNoCoverage(shuffledMutant$);
     const testRunnerResult$ = this.executeRunInTestRunner(coveredMutant$);
     const results = await merge(testRunnerResult$, checkResult$, noCoverageResult$, ignoredResult$).pipe(toArray()).toPromise();
     this.mutationTestReportHelper.reportAll(results);
@@ -113,13 +116,41 @@ export class MutationTestExecutor {
     return { checkResult$, passedMutant$ };
   }
 
+  private executeShuffle(input$: Observable<MutantTestCoverage>) {
+    if (this.options.sampling) {
+      return input$.pipe(
+        shareReplay(),
+        toArray(),
+        map(arr => {
+          this.remainingSamples = Math.ceil(this.options.samplingRate / 100 * arr.length)
+          return shuffle(arr);
+        }),
+        flatMap(x => x)
+      )
+    } else {
+      return input$;
+    }
+  }
+
   private executeRunInTestRunner(input$: Observable<MutantTestCoverage>): Observable<MutantResult> {
     return zip(this.testRunnerPool.worker$, input$).pipe(
       flatMap(async ([testRunner, matchedMutant]) => {
-        const mutantRunOptions = this.createMutantRunOptions(matchedMutant);
-        const result = await testRunner.mutantRun(mutantRunOptions);
-        this.testRunnerPool.recycle(testRunner);
-        return this.mutationTestReportHelper.reportMutantRunResult(matchedMutant, result);
+        if (this.remainingSamples > 0 || !this.options.sampling      ) {
+          const mutantRunOptions = this.createMutantRunOptions(matchedMutant);
+          const result = await testRunner.mutantRun(mutantRunOptions);
+          this.testRunnerPool.recycle(testRunner);
+
+          if (
+            !(result.status === MutantRunStatus.Timeout) &&
+            !(result.status === MutantRunStatus.Error)
+          ) {
+            this.remainingSamples--;
+          }
+          return this.mutationTestReportHelper.reportMutantRunResult(matchedMutant, result);
+        } else {
+          matchedMutant.mutant.ignoreReason = "Not sampled";
+          return this.mutationTestReportHelper.reportMutantIgnored(matchedMutant.mutant);
+        }
       })
     );
   }
