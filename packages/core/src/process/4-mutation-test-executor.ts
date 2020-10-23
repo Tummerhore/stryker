@@ -3,7 +3,7 @@ import { flatMap, toArray, map, tap, shareReplay } from 'rxjs/operators';
 import * as shuffle from 'shuffle-array';
 import { tokens, commonTokens } from '@stryker-mutator/api/plugin';
 import { StrykerOptions } from '@stryker-mutator/api/core';
-import { MutantResult } from '@stryker-mutator/api/report';
+import { MutantResult, MutantStatus } from '@stryker-mutator/api/report';
 import { MutantRunOptions, MutantRunStatus, TestRunner } from '@stryker-mutator/api/test-runner';
 import { Logger } from '@stryker-mutator/api/logging';
 import { I } from '@stryker-mutator/util';
@@ -53,7 +53,9 @@ export class MutationTestExecutor {
     private readonly log: Logger,
     private readonly timer: I<Timer>,
     private readonly concurrencyTokenProvider: I<ConcurrencyTokenProvider>,
-    private remainingSamples: number = 0,
+    private sampledMutants: number = 0,
+    private samplingThreshold: number = 0,
+    private estNrOfValidMutants: number = 0,
   ) {}
 
   public async execute(): Promise<MutantResult[]> {
@@ -61,8 +63,9 @@ export class MutationTestExecutor {
     const { passedMutant$, checkResult$ } = this.executeCheck(from(notIgnoredMutant$));
     const shuffledMutant$ = this.executeShuffle(from(passedMutant$));
     const { coveredMutant$, noCoverageResult$ } = this.executeNoCoverage(shuffledMutant$);
-    const testRunnerResult$ = this.executeRunInTestRunner(coveredMutant$);
-    const results = await merge(testRunnerResult$, checkResult$, noCoverageResult$, ignoredResult$).pipe(toArray()).toPromise();
+    const { testRunnerResult$, notSampledMutant$ } = this.executeRunInTestRunner(coveredMutant$);
+    const allIgnoredResult$ = merge(ignoredResult$, notSampledMutant$);
+    const results = await merge(testRunnerResult$, checkResult$, noCoverageResult$, allIgnoredResult$).pipe(toArray()).toPromise();
     this.mutationTestReportHelper.reportAll(results);
     await this.reporter.wrapUp();
     this.logDone();
@@ -122,7 +125,9 @@ export class MutationTestExecutor {
         shareReplay(),
         toArray(),
         map(arr => {
-          this.remainingSamples = Math.ceil(this.options.samplingRate / 100 * arr.length)
+          this.estNrOfValidMutants = arr.length;
+          this.updateSamplingThreshold()
+          this.log.info(`Sampling Mutants. Estimated number of sampled mutants: ${this.samplingThreshold}`)
           return shuffle(arr);
         }),
         flatMap(x => x)
@@ -132,10 +137,10 @@ export class MutationTestExecutor {
     }
   }
 
-  private executeRunInTestRunner(input$: Observable<MutantTestCoverage>): Observable<MutantResult> {
-    return zip(this.testRunnerPool.worker$, input$).pipe(
+  private executeRunInTestRunner(input$: Observable<MutantTestCoverage>) {
+    const runResult$ = zip(this.testRunnerPool.worker$, input$).pipe(
       flatMap(async ([testRunner, matchedMutant]) => {
-        if (this.remainingSamples > 0 || !this.options.sampling      ) {
+        if (this.sampledMutants < this.samplingThreshold || !this.options.sampling) {
           const mutantRunOptions = this.createMutantRunOptions(matchedMutant);
           const result = await testRunner.mutantRun(mutantRunOptions);
           this.testRunnerPool.recycle(testRunner);
@@ -144,15 +149,27 @@ export class MutationTestExecutor {
             !(result.status === MutantRunStatus.Timeout) &&
             !(result.status === MutantRunStatus.Error)
           ) {
-            this.remainingSamples--;
+            this.sampledMutants++;
+          } else {
+            this.estNrOfValidMutants--;
+            this.updateSamplingThreshold();
           }
+          
           return this.mutationTestReportHelper.reportMutantRunResult(matchedMutant, result);
         } else {
+          this.testRunnerPool.recycle(testRunner);
           matchedMutant.mutant.ignoreReason = "Not sampled";
           return this.mutationTestReportHelper.reportMutantIgnored(matchedMutant.mutant);
         }
       })
     );
+    
+    const [testRunnerResult$, notSampledMutant$] = partition(runResult$.pipe(shareReplay()), mutantResult => mutantResult.status === MutantStatus.Ignored);
+    return { testRunnerResult$, notSampledMutant$ };
+  }
+
+  private updateSamplingThreshold() {
+    this.samplingThreshold = Math.ceil(this.options.samplingRate / 100 * this.estNrOfValidMutants)
   }
 
   private createMutantRunOptions(mutant: MutantTestCoverage): MutantRunOptions {

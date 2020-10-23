@@ -171,10 +171,7 @@ export default class StrykerCli {
 
     const commands = {
       init: () => initializerFactory().initialize(),
-      run: () => {
-        console.log("MEINS");
-        return this.runMutationTest(options);
-      }
+      run: () => this.runMutationTest(options),
     };
 
     if (Object.keys(commands).includes(this.command)) {
