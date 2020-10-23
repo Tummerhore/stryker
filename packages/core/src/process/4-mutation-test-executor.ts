@@ -55,7 +55,7 @@ export class MutationTestExecutor {
     private readonly concurrencyTokenProvider: I<ConcurrencyTokenProvider>,
     private sampledMutants: number = 0,
     private samplingThreshold: number = 0,
-    private estNrOfValidMutants: number = 0,
+    private estNrOfValidMutants: number = 0
   ) {}
 
   public async execute(): Promise<MutantResult[]> {
@@ -124,14 +124,14 @@ export class MutationTestExecutor {
       return input$.pipe(
         shareReplay(),
         toArray(),
-        map(arr => {
+        map((arr) => {
           this.estNrOfValidMutants = arr.length;
-          this.updateSamplingThreshold()
-          this.log.info(`Sampling Mutants. Estimated number of sampled mutants: ${this.samplingThreshold}`)
+          this.updateSamplingThreshold();
+          this.log.info(`Sampling Mutants. Estimated number of sampled mutants: ${this.samplingThreshold}`);
           return shuffle(arr);
         }),
-        flatMap(x => x)
-      )
+        flatMap((x) => x)
+      );
     } else {
       return input$;
     }
@@ -145,31 +145,31 @@ export class MutationTestExecutor {
           const result = await testRunner.mutantRun(mutantRunOptions);
           this.testRunnerPool.recycle(testRunner);
 
-          if (
-            !(result.status === MutantRunStatus.Timeout) &&
-            !(result.status === MutantRunStatus.Error)
-          ) {
+          if (!(result.status === MutantRunStatus.Timeout) && !(result.status === MutantRunStatus.Error)) {
             this.sampledMutants++;
           } else {
             this.estNrOfValidMutants--;
             this.updateSamplingThreshold();
           }
-          
+
           return this.mutationTestReportHelper.reportMutantRunResult(matchedMutant, result);
         } else {
           this.testRunnerPool.recycle(testRunner);
-          matchedMutant.mutant.ignoreReason = "Not sampled";
+          matchedMutant.mutant.ignoreReason = 'Not sampled';
           return this.mutationTestReportHelper.reportMutantIgnored(matchedMutant.mutant);
         }
       })
     );
-    
-    const [testRunnerResult$, notSampledMutant$] = partition(runResult$.pipe(shareReplay()), mutantResult => mutantResult.status === MutantStatus.Ignored);
+
+    const [testRunnerResult$, notSampledMutant$] = partition(
+      runResult$.pipe(shareReplay()),
+      (mutantResult) => mutantResult.status === MutantStatus.Ignored
+    );
     return { testRunnerResult$, notSampledMutant$ };
   }
 
   private updateSamplingThreshold() {
-    this.samplingThreshold = Math.ceil(this.options.samplingRate / 100 * this.estNrOfValidMutants)
+    this.samplingThreshold = Math.ceil((this.options.samplingRate / 100) * this.estNrOfValidMutants);
   }
 
   private createMutantRunOptions(mutant: MutantTestCoverage): MutantRunOptions {
