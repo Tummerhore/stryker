@@ -154,8 +154,13 @@ export class MutationTestExecutor {
 
           return this.mutationTestReportHelper.reportMutantRunResult(matchedMutant, result);
         } else {
-          this.testRunnerPool.recycle(testRunner);
           matchedMutant.mutant.ignoreReason = 'Not sampled';
+          await (async delayMS => {
+            return new Promise(resolve => {
+              setTimeout(resolve, delayMS)
+            })
+          })(1)
+          this.testRunnerPool.recycle(testRunner);
           return this.mutationTestReportHelper.reportMutantIgnored(matchedMutant.mutant);
         }
       })
